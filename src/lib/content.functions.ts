@@ -48,14 +48,11 @@ function getClaimEmail(claims: unknown) {
   return typeof email === "string" ? email.trim().toLowerCase() : "";
 }
 
-function assertAdminAccess(claims: unknown, requireAllowlist: boolean) {
+function assertAdminAccess(claims: unknown) {
   const adminEmails = getConfiguredAdminEmails();
   const email = getClaimEmail(claims);
 
   if (adminEmails.length === 0) {
-    if (requireAllowlist) {
-      throw new Error("Admin writes require ADMIN_EMAILS to be configured.");
-    }
     return;
   }
 
@@ -69,17 +66,13 @@ async function getSupabaseWriteClient(context: {
   claims?: unknown;
 }) {
   const hasServiceRole = Boolean(cleanEnv(process.env.SUPABASE_SERVICE_ROLE_KEY));
-  const production = process.env.NODE_ENV === "production";
+  const hasAdminAllowlist = getConfiguredAdminEmails().length > 0;
 
-  assertAdminAccess(context.claims, hasServiceRole || production);
+  assertAdminAccess(context.claims);
 
-  if (hasServiceRole) {
+  if (hasServiceRole && hasAdminAllowlist) {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     return supabaseAdmin;
-  }
-
-  if (production) {
-    throw new Error("Admin writes require SUPABASE_SERVICE_ROLE_KEY in production.");
   }
 
   return context.supabase;
