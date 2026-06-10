@@ -42,6 +42,7 @@ export const Route = createFileRoute("/admin")({
 });
 
 type Status = Awaited<ReturnType<typeof getConnectionStatus>>;
+type UpdateContentOptions = { saveNow?: boolean };
 
 const ADMIN_TABS = [
   { value: "hero", label: "Hero" },
@@ -61,6 +62,16 @@ const DOCUMENT_CONTENT_TYPES = new Set([
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ]);
 
+function getSessionKey(session: unknown) {
+  if (session === null || typeof session !== "object") return "";
+
+  const user = (session as { user?: { id?: unknown } }).user;
+  if (typeof user?.id === "string" && user.id) return user.id;
+
+  const token = (session as { access_token?: unknown }).access_token;
+  return typeof token === "string" ? token : "";
+}
+
 function AdminPage() {
   const fetchAdminContent = useServerFn(getAdminSiteContent);
   const saveContent = useServerFn(updateSiteContent);
@@ -79,11 +90,7 @@ function AdminPage() {
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const latestContentJsonRef = useRef("");
   const loadCompleteRef = useRef(false);
-
-  function updateContent(next: SiteContent) {
-    setContent(next);
-    setDirty(true);
-  }
+  const loadedSessionKeyRef = useRef("");
 
   useEffect(() => {
     let mounted = true;
@@ -113,21 +120,36 @@ function AdminPage() {
   }, []);
 
   useEffect(() => {
-    if (session) {
-      fetchAdminContent()
-        .then((res) => {
-          const normalized = normalizeSiteContent(res.content);
-          latestContentJsonRef.current = JSON.stringify(normalized);
-          setContent(normalized);
-          setSource(res.source);
-          setDirty(false);
-          loadCompleteRef.current = true;
-        })
-        .catch((e) => toast.error(String(e)));
-      fetchStatus()
-        .then(setStatus)
-        .catch(() => {});
+    const sessionKey = getSessionKey(session);
+
+    if (!sessionKey) {
+      loadedSessionKeyRef.current = "";
+      loadCompleteRef.current = false;
+      setContent(null);
+      setDirty(false);
+      return;
     }
+
+    if (loadedSessionKeyRef.current === sessionKey) return;
+
+    loadedSessionKeyRef.current = sessionKey;
+    loadCompleteRef.current = false;
+    fetchAdminContent()
+      .then((res) => {
+        const normalized = normalizeSiteContent(res.content);
+        latestContentJsonRef.current = JSON.stringify(normalized);
+        setContent(normalized);
+        setSource(res.source);
+        setDirty(false);
+        loadCompleteRef.current = true;
+      })
+      .catch((e) => {
+        loadedSessionKeyRef.current = "";
+        toast.error(String(e));
+      });
+    fetchStatus()
+      .then(setStatus)
+      .catch(() => {});
   }, [session, fetchAdminContent, fetchStatus]);
 
   useEffect(() => {
@@ -168,6 +190,19 @@ function AdminPage() {
       }
     },
     [saveContent, fetchStatus],
+  );
+
+  const updateContent = useCallback(
+    (next: SiteContent, options: UpdateContentOptions = {}) => {
+      latestContentJsonRef.current = JSON.stringify(next);
+      setContent(next);
+      setDirty(true);
+
+      if (options.saveNow && loadCompleteRef.current) {
+        void persistContent(next, "auto");
+      }
+    },
+    [persistContent],
   );
 
   useEffect(() => {
@@ -397,8 +432,8 @@ function StatusCard({
 
 function HeroEditor({ content, setContent }: EditorProps) {
   const h = content.hero;
-  const set = (patch: Partial<SiteContent["hero"]>) =>
-    setContent({ ...content, hero: { ...h, ...patch } });
+  const set = (patch: Partial<SiteContent["hero"]>, options?: UpdateContentOptions) =>
+    setContent({ ...content, hero: { ...h, ...patch } }, options);
   return (
     <Card title="Hero / Profile">
       <Grid>
@@ -456,12 +491,15 @@ function ProjectsEditor({ content, setContent }: EditorProps) {
     const arr = [...content.projects];
     if (editing === -1) arr.push(draft);
     else if (editing !== null) arr[editing] = draft;
-    setContent({ ...content, projects: arr });
+    setContent({ ...content, projects: arr }, { saveNow: true });
     setEditing(null);
     setDraft(null);
   };
   const remove = (i: number) =>
-    setContent({ ...content, projects: content.projects.filter((_, j) => j !== i) });
+    setContent(
+      { ...content, projects: content.projects.filter((_, j) => j !== i) },
+      { saveNow: true },
+    );
 
   return (
     <Card
@@ -549,7 +587,7 @@ function ProjectsEditor({ content, setContent }: EditorProps) {
             <Button variant="outline" onClick={() => setEditing(null)}>
               Cancel
             </Button>
-            <Button onClick={save}>Apply</Button>
+            <Button onClick={save}>Save</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -574,12 +612,15 @@ function SkillsEditor({ content, setContent }: EditorProps) {
     const arr = [...content.skills];
     if (editing === -1) arr.push(draft);
     else if (editing !== null) arr[editing] = draft;
-    setContent({ ...content, skills: arr });
+    setContent({ ...content, skills: arr }, { saveNow: true });
     setEditing(null);
     setDraft(null);
   };
   const remove = (i: number) =>
-    setContent({ ...content, skills: content.skills.filter((_, j) => j !== i) });
+    setContent(
+      { ...content, skills: content.skills.filter((_, j) => j !== i) },
+      { saveNow: true },
+    );
 
   return (
     <Card
@@ -656,7 +697,7 @@ function SkillsEditor({ content, setContent }: EditorProps) {
             <Button variant="outline" onClick={() => setEditing(null)}>
               Cancel
             </Button>
-            <Button onClick={save}>Apply</Button>
+            <Button onClick={save}>Save</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -666,8 +707,8 @@ function SkillsEditor({ content, setContent }: EditorProps) {
 
 function PlaygroundEditor({ content, setContent }: EditorProps) {
   const p = content.playground;
-  const set = (patch: Partial<SiteContent["playground"]>) =>
-    setContent({ ...content, playground: { ...p, ...patch } });
+  const set = (patch: Partial<SiteContent["playground"]>, options?: UpdateContentOptions) =>
+    setContent({ ...content, playground: { ...p, ...patch } }, options);
   const [imgEditing, setImgEditing] = useState<number | null>(null);
   const [imgDraft, setImgDraft] = useState("");
 
@@ -684,7 +725,7 @@ function PlaygroundEditor({ content, setContent }: EditorProps) {
     const arr = [...p.images];
     if (imgEditing === -1) arr.push(imgDraft);
     else if (imgEditing !== null) arr[imgEditing] = imgDraft;
-    set({ images: arr });
+    set({ images: arr }, { saveNow: true });
     setImgEditing(null);
   };
 
@@ -728,7 +769,9 @@ function PlaygroundEditor({ content, setContent }: EditorProps) {
               <Button
                 size="icon"
                 variant="outline"
-                onClick={() => set({ images: p.images.filter((_, j) => j !== i) })}
+                onClick={() =>
+                  set({ images: p.images.filter((_, j) => j !== i) }, { saveNow: true })
+                }
               >
                 <Trash2 className="w-4 h-4 text-red-400" />
               </Button>
@@ -756,7 +799,7 @@ function PlaygroundEditor({ content, setContent }: EditorProps) {
             <Button variant="outline" onClick={() => setImgEditing(null)}>
               Cancel
             </Button>
-            <Button onClick={saveImg}>Apply</Button>
+            <Button onClick={saveImg}>Save</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -784,8 +827,8 @@ function DocumentsEditor({ content, setContent }: EditorProps) {
   const createUploadUrl = useServerFn(createAssetUploadUrl);
   const documents = content.documents;
   const [uploading, setUploading] = useState<DocumentKind | null>(null);
-  const set = (patch: Partial<SiteContent["documents"]>) =>
-    setContent({ ...content, documents: { ...documents, ...patch } });
+  const set = (patch: Partial<SiteContent["documents"]>, options?: UpdateContentOptions) =>
+    setContent({ ...content, documents: { ...documents, ...patch } }, options);
 
   async function uploadDocument(kind: DocumentKind, file: File | null) {
     if (!file) return;
@@ -818,7 +861,7 @@ function DocumentsEditor({ content, setContent }: EditorProps) {
       if (error) throw error;
 
       const key: keyof SiteContent["documents"] = kind === "cv" ? "cvUrl" : "resumeUrl";
-      set({ [key]: signed.publicUrl } as Partial<SiteContent["documents"]>);
+      set({ [key]: signed.publicUrl } as Partial<SiteContent["documents"]>, { saveNow: true });
       toast.success(`${kind === "cv" ? "CV" : "Resume"} uploaded`);
     } catch (e) {
       toast.error(String(e));
@@ -926,8 +969,8 @@ function DocumentUploadField({
 
 function StatsEditor({ content, setContent }: EditorProps) {
   const s = content.stats;
-  const set = (patch: Partial<SiteContent["stats"]>) =>
-    setContent({ ...content, stats: { ...s, ...patch } });
+  const set = (patch: Partial<SiteContent["stats"]>, options?: UpdateContentOptions) =>
+    setContent({ ...content, stats: { ...s, ...patch } }, options);
   return (
     <Card title="Stats">
       <div className="flex items-center justify-between mb-4">
@@ -953,7 +996,7 @@ function StatsEditor({ content, setContent }: EditorProps) {
           <Button
             size="icon"
             variant="ghost"
-            onClick={() => set({ items: s.items.filter((_, j) => j !== i) })}
+            onClick={() => set({ items: s.items.filter((_, j) => j !== i) }, { saveNow: true })}
           >
             <Trash2 className="w-4 h-4 text-red-400" />
           </Button>
@@ -962,7 +1005,7 @@ function StatsEditor({ content, setContent }: EditorProps) {
       <Button
         size="sm"
         variant="outline"
-        onClick={() => set({ items: [...s.items, { value: "", label: "" }] })}
+        onClick={() => set({ items: [...s.items, { value: "", label: "" }] }, { saveNow: true })}
       >
         <Plus className="w-3 h-3 mr-1" /> Add stat
       </Button>
@@ -972,8 +1015,8 @@ function StatsEditor({ content, setContent }: EditorProps) {
 
 function FooterEditor({ content, setContent }: EditorProps) {
   const f = content.footer;
-  const set = (patch: Partial<SiteContent["footer"]>) =>
-    setContent({ ...content, footer: { ...f, ...patch } });
+  const set = (patch: Partial<SiteContent["footer"]>, options?: UpdateContentOptions) =>
+    setContent({ ...content, footer: { ...f, ...patch } }, options);
   const [editing, setEditing] = useState<number | null>(null);
   const [draft, setDraft] = useState<{ label: string; url: string } | null>(null);
 
@@ -991,7 +1034,7 @@ function FooterEditor({ content, setContent }: EditorProps) {
     const arr = [...f.socials];
     if (editing === -1) arr.push(draft);
     else if (editing !== null) arr[editing] = draft;
-    set({ socials: arr });
+    set({ socials: arr }, { saveNow: true });
     setEditing(null);
   };
 
@@ -1032,7 +1075,9 @@ function FooterEditor({ content, setContent }: EditorProps) {
             <Button
               size="icon"
               variant="ghost"
-              onClick={() => set({ socials: f.socials.filter((_, j) => j !== i) })}
+              onClick={() =>
+                set({ socials: f.socials.filter((_, j) => j !== i) }, { saveNow: true })
+              }
             >
               <Trash2 className="w-4 h-4 text-red-400" />
             </Button>
@@ -1065,7 +1110,7 @@ function FooterEditor({ content, setContent }: EditorProps) {
             <Button variant="outline" onClick={() => setEditing(null)}>
               Cancel
             </Button>
-            <Button onClick={save}>Apply</Button>
+            <Button onClick={save}>Save</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1075,7 +1120,10 @@ function FooterEditor({ content, setContent }: EditorProps) {
 
 /* ---------- shared bits ---------- */
 
-type EditorProps = { content: SiteContent; setContent: (c: SiteContent) => void };
+type EditorProps = {
+  content: SiteContent;
+  setContent: (c: SiteContent, options?: UpdateContentOptions) => void;
+};
 
 function Card({
   title,
