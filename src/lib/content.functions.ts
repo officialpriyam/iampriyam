@@ -66,11 +66,10 @@ async function getSupabaseWriteClient(context: {
   claims?: unknown;
 }) {
   const hasServiceRole = Boolean(cleanEnv(process.env.SUPABASE_SERVICE_ROLE_KEY));
-  const hasAdminAllowlist = getConfiguredAdminEmails().length > 0;
 
   assertAdminAccess(context.claims);
 
-  if (hasServiceRole && hasAdminAllowlist) {
+  if (hasServiceRole) {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     return supabaseAdmin;
   }
@@ -79,11 +78,11 @@ async function getSupabaseWriteClient(context: {
 }
 
 async function redisGet(): Promise<SiteContent | null> {
-  const url = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  const url = cleanEnv(process.env.UPSTASH_REDIS_REST_URL);
+  const token = cleanEnv(process.env.UPSTASH_REDIS_REST_TOKEN);
   if (!url || !token) return null;
   try {
-    const res = await fetch(`${url}/get/${REDIS_KEY}`, {
+    const res = await fetch(`${url}/get/${encodeURIComponent(REDIS_KEY)}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) return null;
@@ -95,32 +94,62 @@ async function redisGet(): Promise<SiteContent | null> {
   }
 }
 
-async function redisSet(value: SiteContent): Promise<void> {
-  const url = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (!url || !token) return;
+async function redisSet(value: SiteContent): Promise<boolean> {
+  const url = cleanEnv(process.env.UPSTASH_REDIS_REST_URL);
+  const token = cleanEnv(process.env.UPSTASH_REDIS_REST_TOKEN);
+  if (!url || !token) return false;
+  const serialized = JSON.stringify(value);
   try {
-    await fetch(`${url}/set/${REDIS_KEY}`, {
+    const commandRes = await fetch(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(JSON.stringify(value)),
+      body: JSON.stringify(["SET", REDIS_KEY, serialized]),
     });
+    if (commandRes.ok) return true;
+
+    const res = await fetch(`${url}/set/${encodeURIComponent(REDIS_KEY)}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "text/plain" },
+      body: serialized,
+    });
+    if (res.ok) return true;
+
+    if (serialized.length < 7000) {
+      const urlCommandRes = await fetch(
+        `${url}/set/${encodeURIComponent(REDIS_KEY)}/${encodeURIComponent(serialized)}`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+      return urlCommandRes.ok;
+    }
+
+    return false;
   } catch {
-    /* ignore */
+    return false;
   }
 }
 
-async function redisDel(): Promise<void> {
-  const url = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (!url || !token) return;
+async function redisDel(): Promise<boolean> {
+  const url = cleanEnv(process.env.UPSTASH_REDIS_REST_URL);
+  const token = cleanEnv(process.env.UPSTASH_REDIS_REST_TOKEN);
+  if (!url || !token) return false;
   try {
-    await fetch(`${url}/del/${REDIS_KEY}`, {
+    const commandRes = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(["DEL", REDIS_KEY]),
+    });
+    if (commandRes.ok) return true;
+
+    const res = await fetch(`${url}/del/${encodeURIComponent(REDIS_KEY)}`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
     });
+    return res.ok;
   } catch {
-    /* ignore */
+    return false;
   }
 }
 
@@ -156,9 +185,24 @@ export const updateSiteContent = createServerFn({ method: "POST" })
       .from("site_content")
       .upsert({ id: "main", data: content, updated_at: new Date().toISOString() });
     if (error) throw error;
-    // Write-through cache
-    await redisSet(content);
-    return { ok: true, content };
+
+    const { data: saved, error: readError } = await supabase
+      .from("site_content")
+      .select("data")
+      .eq("id", "main")
+      .single();
+    if (readError) throw readError;
+
+    const savedContent = normalizeSiteContent(saved.data);
+
+    // Clear stale cache first, then write the persisted Supabase value back.
+    const cacheCleared = await redisDel();
+    const cacheUpdated = await redisSet(savedContent);
+    return {
+      ok: true,
+      content: savedContent,
+      cache: cacheUpdated ? "updated" : cacheCleared ? "cleared" : "unavailable",
+    };
   });
 
 export const invalidateContentCache = createServerFn({ method: "POST" })

@@ -121,7 +121,11 @@ function AdminPage() {
       setSource("supabase");
       setDirty(false);
       setLastSavedAt(new Date());
-      toast.success("Saved");
+      if (res.cache === "unavailable") {
+        toast.warning("Saved to Supabase, but Redis cache could not be refreshed.");
+      } else {
+        toast.success("Saved");
+      }
       const s = await fetchStatus();
       setStatus(s);
     } catch (e) {
