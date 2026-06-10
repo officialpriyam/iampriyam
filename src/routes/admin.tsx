@@ -32,6 +32,15 @@ export const Route = createFileRoute("/admin")({
 
 type Status = Awaited<ReturnType<typeof getConnectionStatus>>;
 
+const ADMIN_TABS = [
+  { value: "hero", label: "Hero" },
+  { value: "projects", label: "Projects" },
+  { value: "skills", label: "Skills" },
+  { value: "playground", label: "Playground" },
+  { value: "stats", label: "Stats" },
+  { value: "footer", label: "Footer" },
+] as const;
+
 function AdminPage() {
   const fetchContent = useServerFn(getSiteContent);
   const saveContent = useServerFn(updateSiteContent);
@@ -46,6 +55,13 @@ function AdminPage() {
   const [source, setSource] = useState<"redis" | "supabase" | "default" | "">("");
   const [status, setStatus] = useState<Status | null>(null);
   const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+
+  function updateContent(next: SiteContent) {
+    setContent(next);
+    setDirty(true);
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -80,6 +96,7 @@ function AdminPage() {
         .then((res) => {
           setContent(normalizeSiteContent(res.content));
           setSource(res.source);
+          setDirty(false);
         })
         .catch((e) => toast.error(String(e)));
       fetchStatus()
@@ -99,7 +116,11 @@ function AdminPage() {
     if (!content) return;
     setSaving(true);
     try {
-      await saveContent({ data: { data: content } });
+      const res = await saveContent({ data: { data: content } });
+      setContent(normalizeSiteContent(res.content));
+      setSource("supabase");
+      setDirty(false);
+      setLastSavedAt(new Date());
       toast.success("Saved");
       const s = await fetchStatus();
       setStatus(s);
@@ -117,6 +138,7 @@ function AdminPage() {
       const res = await fetchContent();
       setContent(normalizeSiteContent(res.content));
       setSource(res.source);
+      setDirty(false);
     } catch (e) {
       toast.error(String(e));
     }
@@ -168,6 +190,12 @@ function AdminPage() {
           <h1 className="text-2xl md:text-3xl font-display italic">Admin</h1>
           <p className="text-xs text-muted mt-1">
             Loaded from <span className="text-text-primary">{source || "—"}</span>
+            {dirty && <span className="ml-2 text-amber-300">Unsaved changes</span>}
+            {!dirty && lastSavedAt && (
+              <span className="ml-2 text-green-400">
+                Saved {lastSavedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              </span>
+            )}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -180,8 +208,9 @@ function AdminPage() {
           <Button size="sm" variant="outline" onClick={handleInvalidate}>
             <RefreshCw className="w-3 h-3 mr-1" /> Clear cache
           </Button>
-          <Button size="sm" onClick={handleSave} disabled={saving}>
-            {saving ? "Saving…" : "Save changes"}
+          <Button size="sm" onClick={handleSave} disabled={saving || !dirty}>
+            <span>{saving ? "Saving..." : dirty ? "Save changes" : "Saved"}</span>
+            <span className="hidden">{saving ? "Saving…" : "Save changes"}</span>
           </Button>
           <Button size="sm" variant="outline" onClick={() => supabase.auth.signOut()}>
             Logout
@@ -192,38 +221,38 @@ function AdminPage() {
       <StatusBar status={status} onRefresh={() => fetchStatus().then(setStatus)} />
 
       <Tabs defaultValue="hero" className="mt-6">
-        <TabsList className="flex flex-wrap h-auto">
-          <TabsTrigger value="hero">Hero</TabsTrigger>
-          <TabsTrigger value="projects">Projects</TabsTrigger>
-          <TabsTrigger value="skills">Skills</TabsTrigger>
-          <TabsTrigger value="playground">Playground</TabsTrigger>
-          <TabsTrigger value="stats">Stats</TabsTrigger>
-          <TabsTrigger value="footer">Footer</TabsTrigger>
+        <TabsList className="grid w-full grid-cols-2 gap-1 h-auto rounded-xl sm:grid-cols-3 lg:grid-cols-6">
+          {ADMIN_TABS.map((tab) => (
+            <TabsTrigger key={tab.value} value={tab.value} className="h-9 rounded-lg">
+              {tab.label}
+            </TabsTrigger>
+          ))}
         </TabsList>
 
         <TabsContent value="hero" className="mt-6">
-          <HeroEditor content={content} setContent={setContent} />
+          <HeroEditor content={content} setContent={updateContent} />
         </TabsContent>
         <TabsContent value="projects" className="mt-6">
-          <ProjectsEditor content={content} setContent={setContent} />
+          <ProjectsEditor content={content} setContent={updateContent} />
         </TabsContent>
         <TabsContent value="skills" className="mt-6">
-          <SkillsEditor content={content} setContent={setContent} />
+          <SkillsEditor content={content} setContent={updateContent} />
         </TabsContent>
         <TabsContent value="playground" className="mt-6">
-          <PlaygroundEditor content={content} setContent={setContent} />
+          <PlaygroundEditor content={content} setContent={updateContent} />
         </TabsContent>
         <TabsContent value="stats" className="mt-6">
-          <StatsEditor content={content} setContent={setContent} />
+          <StatsEditor content={content} setContent={updateContent} />
         </TabsContent>
         <TabsContent value="footer" className="mt-6">
-          <FooterEditor content={content} setContent={setContent} />
+          <FooterEditor content={content} setContent={updateContent} />
         </TabsContent>
       </Tabs>
 
       <div className="flex justify-end pt-10 pb-12">
-        <Button onClick={handleSave} disabled={saving} size="lg">
-          {saving ? "Saving…" : "Save all changes"}
+        <Button onClick={handleSave} disabled={saving || !dirty} size="lg">
+          <span>{saving ? "Saving..." : dirty ? "Save all changes" : "All changes saved"}</span>
+          <span className="hidden">{saving ? "Saving…" : "Save all changes"}</span>
         </Button>
       </div>
     </main>
@@ -446,7 +475,7 @@ function ProjectsEditor({ content, setContent }: EditorProps) {
             <Button variant="outline" onClick={() => setEditing(null)}>
               Cancel
             </Button>
-            <Button onClick={save}>Save</Button>
+            <Button onClick={save}>Apply</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -553,7 +582,7 @@ function SkillsEditor({ content, setContent }: EditorProps) {
             <Button variant="outline" onClick={() => setEditing(null)}>
               Cancel
             </Button>
-            <Button onClick={save}>Save</Button>
+            <Button onClick={save}>Apply</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -653,7 +682,7 @@ function PlaygroundEditor({ content, setContent }: EditorProps) {
             <Button variant="outline" onClick={() => setImgEditing(null)}>
               Cancel
             </Button>
-            <Button onClick={saveImg}>Save</Button>
+            <Button onClick={saveImg}>Apply</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -802,7 +831,7 @@ function FooterEditor({ content, setContent }: EditorProps) {
             <Button variant="outline" onClick={() => setEditing(null)}>
               Cancel
             </Button>
-            <Button onClick={save}>Save</Button>
+            <Button onClick={save}>Apply</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

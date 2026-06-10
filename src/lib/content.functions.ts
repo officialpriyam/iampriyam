@@ -33,6 +33,58 @@ function getSupabaseReadClient() {
   });
 }
 
+function getConfiguredAdminEmails() {
+  const value = cleanEnv(process.env.ADMIN_EMAILS || process.env.ADMIN_EMAIL);
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function getClaimEmail(claims: unknown) {
+  if (claims === null || typeof claims !== "object") return "";
+  const email = (claims as { email?: unknown }).email;
+  return typeof email === "string" ? email.trim().toLowerCase() : "";
+}
+
+function assertAdminAccess(claims: unknown, requireAllowlist: boolean) {
+  const adminEmails = getConfiguredAdminEmails();
+  const email = getClaimEmail(claims);
+
+  if (adminEmails.length === 0) {
+    if (requireAllowlist) {
+      throw new Error("Admin writes require ADMIN_EMAILS to be configured.");
+    }
+    return;
+  }
+
+  if (!email || !adminEmails.includes(email)) {
+    throw new Error("Unauthorized: this account is not allowed to edit site content.");
+  }
+}
+
+async function getSupabaseWriteClient(context: {
+  supabase: ReturnType<typeof createClient<Database>>;
+  claims?: unknown;
+}) {
+  const hasServiceRole = Boolean(cleanEnv(process.env.SUPABASE_SERVICE_ROLE_KEY));
+  const production = process.env.NODE_ENV === "production";
+
+  assertAdminAccess(context.claims, hasServiceRole || production);
+
+  if (hasServiceRole) {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    return supabaseAdmin;
+  }
+
+  if (production) {
+    throw new Error("Admin writes require SUPABASE_SERVICE_ROLE_KEY in production.");
+  }
+
+  return context.supabase;
+}
+
 async function redisGet(): Promise<SiteContent | null> {
   const url = process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN;
@@ -106,13 +158,14 @@ export const updateSiteContent = createServerFn({ method: "POST" })
   .validator((input: { data: SiteContent }) => input)
   .handler(async ({ data, context }) => {
     const content = normalizeSiteContent(data.data);
-    const { error } = await context.supabase
+    const supabase = await getSupabaseWriteClient(context);
+    const { error } = await supabase
       .from("site_content")
       .upsert({ id: "main", data: content, updated_at: new Date().toISOString() });
     if (error) throw error;
     // Write-through cache
     await redisSet(content);
-    return { ok: true };
+    return { ok: true, content };
   });
 
 export const invalidateContentCache = createServerFn({ method: "POST" })
