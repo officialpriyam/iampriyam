@@ -8,7 +8,7 @@ export type SiteContent = {
     logo?: string;
     pfp?: string;
   };
-  projects: { title: string; img: string; featured: boolean; url: string }[];
+  projects: { title: string; img: string; featured: boolean; url: string; githubUrl: string }[];
   skills: { name: string; icon: string; level: number }[];
   playground: {
     title: string;
@@ -17,6 +17,10 @@ export type SiteContent = {
     ctaLabel: string;
     ctaUrl: string;
     images: string[];
+  };
+  documents: {
+    cvUrl: string;
+    resumeUrl: string;
   };
   stats: { visible: boolean; items: { value: string; label: string }[] };
   footer: {
@@ -46,6 +50,10 @@ export const DEFAULT_SITE_CONTENT: SiteContent = {
     ctaLabel: "",
     ctaUrl: "#",
     images: [],
+  },
+  documents: {
+    cvUrl: "",
+    resumeUrl: "",
   },
   stats: { visible: false, items: [] },
   footer: { name: "", email: "", available: false, socials: [] },
@@ -81,6 +89,7 @@ export function normalizeSiteContent(input: unknown): SiteContent {
   const root = isRecord(input) ? input : {};
   const hero = isRecord(root.hero) ? root.hero : {};
   const playground = isRecord(root.playground) ? root.playground : {};
+  const documents = isRecord(root.documents) ? root.documents : {};
   const stats = isRecord(root.stats) ? root.stats : {};
   const footer = isRecord(root.footer) ? root.footer : {};
 
@@ -99,6 +108,7 @@ export function normalizeSiteContent(input: unknown): SiteContent {
       img: stringValue(project.img),
       featured: booleanValue(project.featured),
       url: stringValue(project.url, "#"),
+      githubUrl: stringValue(project.githubUrl),
     })),
     skills: recordArray(root.skills).map((skill) => ({
       name: stringValue(skill.name),
@@ -112,6 +122,10 @@ export function normalizeSiteContent(input: unknown): SiteContent {
       ctaLabel: stringValue(playground.ctaLabel),
       ctaUrl: stringValue(playground.ctaUrl, "#"),
       images: stringArray(playground.images),
+    },
+    documents: {
+      cvUrl: stringValue(documents.cvUrl),
+      resumeUrl: stringValue(documents.resumeUrl),
     },
     stats: {
       visible: booleanValue(stats.visible),

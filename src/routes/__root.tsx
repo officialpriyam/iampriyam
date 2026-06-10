@@ -12,6 +12,7 @@ import { useEffect, type ReactNode } from "react";
 import appCss from "../styles.css?url";
 import { Toaster } from "@/components/ui/sonner";
 import { CursorGlow } from "@/components/CursorGlow";
+import { SocialLauncher } from "@/components/SocialLauncher";
 
 function NotFoundComponent() {
   return (
@@ -136,6 +137,7 @@ function RootComponent() {
     <QueryClientProvider client={queryClient}>
       <Outlet />
       <CursorGlow />
+      <SocialLauncher />
       <Toaster theme="dark" />
     </QueryClientProvider>
   );

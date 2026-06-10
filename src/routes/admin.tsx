@@ -1,12 +1,13 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { supabase } from "@/integrations/supabase/client";
 import {
-  getSiteContent,
+  getAdminSiteContent,
   updateSiteContent,
   getConnectionStatus,
   invalidateContentCache,
+  createAssetUploadUrl,
 } from "@/lib/content.functions";
 import { normalizeSiteContent, type SiteContent } from "@/lib/site-content";
 import { toast } from "sonner";
@@ -23,7 +24,17 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Pencil, Plus, Trash2, RefreshCw, Database, Zap } from "lucide-react";
+import {
+  Database,
+  FileText,
+  LinkIcon,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Trash2,
+  Upload,
+  Zap,
+} from "lucide-react";
 
 export const Route = createFileRoute("/admin")({
   ssr: false,
@@ -37,12 +48,21 @@ const ADMIN_TABS = [
   { value: "projects", label: "Projects" },
   { value: "skills", label: "Skills" },
   { value: "playground", label: "Playground" },
+  { value: "documents", label: "Documents" },
   { value: "stats", label: "Stats" },
   { value: "footer", label: "Footer" },
 ] as const;
 
+const SITE_ASSETS_BUCKET = "site-assets";
+const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
+const DOCUMENT_CONTENT_TYPES = new Set([
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+]);
+
 function AdminPage() {
-  const fetchContent = useServerFn(getSiteContent);
+  const fetchAdminContent = useServerFn(getAdminSiteContent);
   const saveContent = useServerFn(updateSiteContent);
   const fetchStatus = useServerFn(getConnectionStatus);
   const invalidate = useServerFn(invalidateContentCache);
@@ -57,6 +77,8 @@ function AdminPage() {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const latestContentJsonRef = useRef("");
+  const loadCompleteRef = useRef(false);
 
   function updateContent(next: SiteContent) {
     setContent(next);
@@ -92,18 +114,71 @@ function AdminPage() {
 
   useEffect(() => {
     if (session) {
-      fetchContent()
+      fetchAdminContent()
         .then((res) => {
-          setContent(normalizeSiteContent(res.content));
+          const normalized = normalizeSiteContent(res.content);
+          latestContentJsonRef.current = JSON.stringify(normalized);
+          setContent(normalized);
           setSource(res.source);
           setDirty(false);
+          loadCompleteRef.current = true;
         })
         .catch((e) => toast.error(String(e)));
       fetchStatus()
         .then(setStatus)
         .catch(() => {});
     }
-  }, [session, fetchContent, fetchStatus]);
+  }, [session, fetchAdminContent, fetchStatus]);
+
+  useEffect(() => {
+    latestContentJsonRef.current = content ? JSON.stringify(content) : "";
+  }, [content]);
+
+  const persistContent = useCallback(
+    async (nextContent: SiteContent, mode: "auto" | "manual") => {
+      const submittedJson = JSON.stringify(nextContent);
+      setSaving(true);
+      try {
+        const res = await saveContent({ data: { data: nextContent } });
+        const savedContent = normalizeSiteContent(res.content);
+        const savedJson = JSON.stringify(savedContent);
+
+        if (latestContentJsonRef.current === submittedJson) {
+          latestContentJsonRef.current = savedJson;
+          setContent(savedContent);
+          setDirty(false);
+        } else {
+          setDirty(true);
+        }
+
+        setSource("supabase");
+        setLastSavedAt(new Date());
+        if (res.cache === "unavailable") {
+          toast.warning("Saved to Supabase, but Redis cache could not be refreshed.");
+        } else if (mode === "manual") {
+          toast.success("Saved");
+        }
+        const s = await fetchStatus();
+        setStatus(s);
+      } catch (e) {
+        setDirty(true);
+        toast.error(String(e));
+      } finally {
+        setSaving(false);
+      }
+    },
+    [saveContent, fetchStatus],
+  );
+
+  useEffect(() => {
+    if (!session || !content || !dirty || !loadCompleteRef.current) return;
+
+    const timer = window.setTimeout(() => {
+      void persistContent(content, "auto");
+    }, 1200);
+
+    return () => window.clearTimeout(timer);
+  }, [content, dirty, persistContent, session]);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -114,33 +189,17 @@ function AdminPage() {
 
   async function handleSave() {
     if (!content) return;
-    setSaving(true);
-    try {
-      const res = await saveContent({ data: { data: content } });
-      setContent(normalizeSiteContent(res.content));
-      setSource("supabase");
-      setDirty(false);
-      setLastSavedAt(new Date());
-      if (res.cache === "unavailable") {
-        toast.warning("Saved to Supabase, but Redis cache could not be refreshed.");
-      } else {
-        toast.success("Saved");
-      }
-      const s = await fetchStatus();
-      setStatus(s);
-    } catch (e) {
-      toast.error(String(e));
-    } finally {
-      setSaving(false);
-    }
+    await persistContent(content, "manual");
   }
 
   async function handleInvalidate() {
     try {
       await invalidate();
       toast.success("Cache cleared");
-      const res = await fetchContent();
-      setContent(normalizeSiteContent(res.content));
+      const res = await fetchAdminContent();
+      const normalized = normalizeSiteContent(res.content);
+      latestContentJsonRef.current = JSON.stringify(normalized);
+      setContent(normalized);
       setSource(res.source);
       setDirty(false);
     } catch (e) {
@@ -194,7 +253,8 @@ function AdminPage() {
           <h1 className="text-2xl md:text-3xl font-display italic">Admin</h1>
           <p className="text-xs text-muted mt-1">
             Loaded from <span className="text-text-primary">{source || "—"}</span>
-            {dirty && <span className="ml-2 text-amber-300">Unsaved changes</span>}
+            {saving && <span className="ml-2 text-sky-300">Saving changes...</span>}
+            {!saving && dirty && <span className="ml-2 text-amber-300">Unsaved changes</span>}
             {!dirty && lastSavedAt && (
               <span className="ml-2 text-green-400">
                 Saved {lastSavedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -225,7 +285,7 @@ function AdminPage() {
       <StatusBar status={status} onRefresh={() => fetchStatus().then(setStatus)} />
 
       <Tabs defaultValue="hero" className="mt-6">
-        <TabsList className="grid w-full grid-cols-2 gap-1 h-auto rounded-xl sm:grid-cols-3 lg:grid-cols-6">
+        <TabsList className="grid w-full grid-cols-2 gap-1 h-auto rounded-xl sm:grid-cols-3 lg:grid-cols-7">
           {ADMIN_TABS.map((tab) => (
             <TabsTrigger key={tab.value} value={tab.value} className="h-9 rounded-lg">
               {tab.label}
@@ -244,6 +304,9 @@ function AdminPage() {
         </TabsContent>
         <TabsContent value="playground" className="mt-6">
           <PlaygroundEditor content={content} setContent={updateContent} />
+        </TabsContent>
+        <TabsContent value="documents" className="mt-6">
+          <DocumentsEditor content={content} setContent={updateContent} />
         </TabsContent>
         <TabsContent value="stats" className="mt-6">
           <StatsEditor content={content} setContent={updateContent} />
@@ -381,7 +444,7 @@ function ProjectsEditor({ content, setContent }: EditorProps) {
 
   const open = (i: number | "new") => {
     if (i === "new") {
-      setDraft({ title: "", img: "", url: "", featured: false });
+      setDraft({ title: "", img: "", url: "", githubUrl: "", featured: false });
       setEditing(-1);
     } else {
       setDraft({ ...content.projects[i] });
@@ -428,6 +491,7 @@ function ProjectsEditor({ content, setContent }: EditorProps) {
               <p className="text-sm truncate">{p.title || "Untitled"}</p>
               <p className="text-xs text-muted truncate">
                 {p.url || "no link"}
+                {p.githubUrl && " | GitHub"}
                 {p.featured && " · ★ Featured"}
               </p>
             </div>
@@ -464,6 +528,12 @@ function ProjectsEditor({ content, setContent }: EditorProps) {
                 <Input
                   value={draft.url}
                   onChange={(e) => setDraft({ ...draft, url: e.target.value })}
+                />
+              </FieldRow>
+              <FieldRow label="GitHub URL">
+                <Input
+                  value={draft.githubUrl}
+                  onChange={(e) => setDraft({ ...draft, githubUrl: e.target.value })}
                 />
               </FieldRow>
               <div className="flex items-center justify-between">
@@ -691,6 +761,166 @@ function PlaygroundEditor({ content, setContent }: EditorProps) {
         </DialogContent>
       </Dialog>
     </Card>
+  );
+}
+
+type DocumentKind = "cv" | "resume";
+
+function getDocumentContentType(file: File) {
+  const normalizedType = file.type.trim().toLowerCase();
+  if (DOCUMENT_CONTENT_TYPES.has(normalizedType)) return normalizedType;
+
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  if (extension === "pdf") return "application/pdf";
+  if (extension === "doc") return "application/msword";
+  if (extension === "docx") {
+    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  }
+
+  return "";
+}
+
+function DocumentsEditor({ content, setContent }: EditorProps) {
+  const createUploadUrl = useServerFn(createAssetUploadUrl);
+  const documents = content.documents;
+  const [uploading, setUploading] = useState<DocumentKind | null>(null);
+  const set = (patch: Partial<SiteContent["documents"]>) =>
+    setContent({ ...content, documents: { ...documents, ...patch } });
+
+  async function uploadDocument(kind: DocumentKind, file: File | null) {
+    if (!file) return;
+
+    const contentType = getDocumentContentType(file);
+    if (!contentType) {
+      toast.error("Only PDF, DOC, and DOCX files are supported.");
+      return;
+    }
+
+    if (file.size > MAX_DOCUMENT_BYTES) {
+      toast.error("Document must be 10 MB or smaller.");
+      return;
+    }
+
+    setUploading(kind);
+    try {
+      const signed = await createUploadUrl({
+        data: {
+          kind,
+          fileName: file.name,
+          contentType,
+          size: file.size,
+        },
+      });
+      const { error } = await supabase.storage
+        .from(SITE_ASSETS_BUCKET)
+        .uploadToSignedUrl(signed.path, signed.token, file, { contentType });
+
+      if (error) throw error;
+
+      const key: keyof SiteContent["documents"] = kind === "cv" ? "cvUrl" : "resumeUrl";
+      set({ [key]: signed.publicUrl } as Partial<SiteContent["documents"]>);
+      toast.success(`${kind === "cv" ? "CV" : "Resume"} uploaded`);
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setUploading(null);
+    }
+  }
+
+  return (
+    <Card title="CV / Resume">
+      <p className="text-xs text-muted mb-4 flex items-center gap-2">
+        <Upload className="w-3 h-3" />
+        Upload PDF, DOC, or DOCX files, then save changes to publish the buttons.
+      </p>
+      <Grid>
+        <DocumentUploadField
+          label="CV"
+          url={documents.cvUrl}
+          uploading={uploading === "cv"}
+          onUrlChange={(cvUrl) => set({ cvUrl })}
+          onUpload={(file) => uploadDocument("cv", file)}
+        />
+        <DocumentUploadField
+          label="Resume"
+          url={documents.resumeUrl}
+          uploading={uploading === "resume"}
+          onUrlChange={(resumeUrl) => set({ resumeUrl })}
+          onUpload={(file) => uploadDocument("resume", file)}
+        />
+      </Grid>
+    </Card>
+  );
+}
+
+function DocumentUploadField({
+  label,
+  url,
+  uploading,
+  onUrlChange,
+  onUpload,
+}: {
+  label: string;
+  url: string;
+  uploading: boolean;
+  onUrlChange: (url: string) => void;
+  onUpload: (file: File | null) => Promise<void>;
+}) {
+  return (
+    <div className="rounded-xl border border-stroke bg-surface/40 p-4 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="w-10 h-10 rounded-lg bg-surface border border-stroke flex items-center justify-center">
+            <FileText className="w-4 h-4 text-muted" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm">{label}</p>
+            <p className="text-xs text-muted truncate">
+              {url ? "File URL is set" : "No file selected"}
+            </p>
+          </div>
+        </div>
+        {url && (
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs border border-stroke rounded-full px-3 py-1.5 hover:bg-surface"
+          >
+            Open
+          </a>
+        )}
+      </div>
+
+      <FieldRow label={`${label} upload`}>
+        <Input
+          type="file"
+          accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          disabled={uploading}
+          onChange={(e) => {
+            const input = e.currentTarget;
+            const file = input.files?.[0] ?? null;
+            void onUpload(file).finally(() => {
+              input.value = "";
+            });
+          }}
+        />
+      </FieldRow>
+
+      <FieldRow label={`${label} URL`}>
+        <div className="relative">
+          <LinkIcon className="absolute left-3 top-1/2 w-4 h-4 -translate-y-1/2 text-muted" />
+          <Input
+            className="pl-9"
+            value={url}
+            onChange={(e) => onUrlChange(e.target.value)}
+            placeholder="https://..."
+          />
+        </div>
+      </FieldRow>
+
+      {uploading && <p className="text-xs text-muted">Uploading...</p>}
+    </div>
   );
 }
 

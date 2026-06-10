@@ -3,10 +3,19 @@ import { AnimatePresence, motion } from "framer-motion";
 
 const WORDS = ["Design", "Create", "Inspire"];
 
-export function LoadingScreen({ onComplete }: { onComplete: () => void }) {
+type LoadingScreenProps = {
+  onComplete: () => void;
+  label?: string;
+};
+
+export function LoadingScreen({
+  onComplete,
+  label = "Portfolio",
+}: LoadingScreenProps) {
   const [count, setCount] = useState(0);
   const [wordIdx, setWordIdx] = useState(0);
   const startRef = useRef<number | null>(null);
+  const displayLabel = label.trim() || "Portfolio";
 
   useEffect(() => {
     let raf = 0;
@@ -38,7 +47,7 @@ export function LoadingScreen({ onComplete }: { onComplete: () => void }) {
         transition={{ duration: 0.6, ease: "easeOut" }}
         className="absolute top-6 left-6 md:top-8 md:left-8 text-xs text-muted uppercase tracking-[0.3em]"
       >
-        Portfolio
+        {displayLabel}
       </motion.div>
 
       <div className="absolute inset-0 flex items-center justify-center">

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import gsap from "gsap";
 import { BackgroundVideo } from "./BackgroundVideo";
 import { motion } from "framer-motion";
+import { Download } from "lucide-react";
 import { useSiteContent } from "@/hooks/useSiteContent";
 
 export function Hero() {
@@ -27,6 +28,10 @@ export function Hero() {
 
   if (!content) return <section className="min-h-screen bg-bg" />;
   const h = content.hero;
+  const documentLinks = [
+    { label: "Download CV", url: content.documents.cvUrl },
+    { label: "Download Resume", url: content.documents.resumeUrl },
+  ].filter((item) => item.url.trim());
 
   return (
     <section
@@ -65,18 +70,40 @@ export function Hero() {
         </p>
         <p className="blur-in text-sm md:text-base text-muted max-w-md mb-12">{h.bio}</p>
         <div className="blur-in inline-flex flex-wrap justify-center gap-4">
-          <a href="#work" className="group relative rounded-full overflow-hidden transition-transform hover:scale-105">
+          <a
+            href="#work"
+            className="group relative rounded-full overflow-hidden transition-transform hover:scale-105"
+          >
             <span className="absolute inset-0 accent-gradient-anim opacity-0 group-hover:opacity-100 transition-opacity" />
             <span className="relative block bg-text-primary text-bg group-hover:bg-bg group-hover:text-text-primary text-sm px-7 py-3.5 rounded-full m-[2px] transition-colors">
               See Works
             </span>
           </a>
-          <a href="#contact" className="group relative rounded-full transition-transform hover:scale-105">
+          <a
+            href="#contact"
+            className="group relative rounded-full transition-transform hover:scale-105"
+          >
             <span className="absolute inset-0 accent-gradient-anim opacity-0 group-hover:opacity-100 transition-opacity rounded-full" />
             <span className="relative block bg-bg text-text-primary text-sm px-7 py-3.5 rounded-full border-2 border-stroke group-hover:border-transparent">
               Reach out...
             </span>
           </a>
+          {documentLinks.map((item) => (
+            <a
+              key={item.label}
+              href={item.url}
+              download
+              target="_blank"
+              rel="noreferrer"
+              className="group relative inline-flex rounded-full transition-transform hover:scale-105"
+            >
+              <span className="absolute inset-0 accent-gradient-anim opacity-0 group-hover:opacity-100 transition-opacity rounded-full" />
+              <span className="relative inline-flex items-center gap-2 bg-bg text-text-primary text-sm px-7 py-3.5 rounded-full border-2 border-stroke group-hover:border-transparent">
+                <Download className="w-4 h-4" />
+                {item.label}
+              </span>
+            </a>
+          ))}
         </div>
       </div>
 

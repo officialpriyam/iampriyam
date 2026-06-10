@@ -1,6 +1,7 @@
 import { SectionHeader } from "./SectionHeader";
 import { motion } from "framer-motion";
 import { Link } from "@tanstack/react-router";
+import { ExternalLink, Github } from "lucide-react";
 import { useSiteContent } from "@/hooks/useSiteContent";
 
 export function SelectedWorks() {
@@ -21,8 +22,7 @@ export function SelectedWorks() {
         />
         <div className="grid grid-cols-1 md:grid-cols-12 gap-5 md:gap-6">
           {projects.map((p, i) => (
-            <motion.a
-              href={p.url || "#"}
+            <motion.div
               key={p.title + i}
               initial={{ opacity: 0, y: 40 }}
               whileInView={{ opacity: 1, y: 0 }}
@@ -38,19 +38,43 @@ export function SelectedWorks() {
               />
               <div className="absolute inset-0 halftone opacity-20 mix-blend-multiply" />
               <div className="absolute inset-0 bg-bg/70 opacity-0 group-hover:opacity-100 backdrop-blur-lg transition-opacity duration-500 flex items-center justify-center">
-                <div className="relative rounded-full p-[2px] overflow-hidden">
-                  <span className="absolute inset-0 accent-gradient-anim" />
-                  <span className="relative block bg-white text-bg text-sm px-5 py-2 rounded-full">
-                    View — <span className="font-display italic">{p.title}</span>
+                <div className="flex flex-wrap items-center justify-center gap-3 px-6">
+                  <span className="w-full text-center text-text-primary font-display italic text-2xl">
+                    {p.title}
                   </span>
+                  {p.url && p.url !== "#" && (
+                    <a
+                      href={p.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 rounded-full bg-white text-bg text-sm px-5 py-2 transition-transform hover:scale-105"
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                      View
+                    </a>
+                  )}
+                  {p.githubUrl && (
+                    <a
+                      href={p.githubUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 rounded-full border border-white/30 bg-bg/80 text-text-primary text-sm px-5 py-2 transition-transform hover:scale-105"
+                    >
+                      <Github className="w-4 h-4" />
+                      GitHub
+                    </a>
+                  )}
                 </div>
               </div>
-            </motion.a>
+            </motion.div>
           ))}
         </div>
         <div className="mt-10 flex justify-center md:hidden">
-          <Link to="/projects" className="text-sm text-text-primary border border-stroke rounded-full px-5 py-2.5">
-            View all projects →
+          <Link
+            to="/projects"
+            className="text-sm text-text-primary border border-stroke rounded-full px-5 py-2.5"
+          >
+            View all projects
           </Link>
         </div>
       </div>

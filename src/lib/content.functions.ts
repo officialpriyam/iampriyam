@@ -5,6 +5,14 @@ import type { Database } from "@/integrations/supabase/types";
 import { DEFAULT_SITE_CONTENT, normalizeSiteContent, type SiteContent } from "@/lib/site-content";
 
 const REDIS_KEY = "site_content:main";
+const SITE_ASSETS_BUCKET = "site-assets";
+const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
+const DOCUMENT_CONTENT_TYPES = new Set([
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+]);
+const DOCUMENT_EXTENSIONS = new Set(["pdf", "doc", "docx"]);
 
 function cleanEnv(value: string | undefined) {
   return value?.trim().replace(/^["']|["']$/g, "");
@@ -59,6 +67,77 @@ function assertAdminAccess(claims: unknown) {
   if (!email || !adminEmails.includes(email)) {
     throw new Error("Unauthorized: this account is not allowed to edit site content.");
   }
+}
+
+function getExtension(fileName: string) {
+  return fileName.split(".").pop()?.toLowerCase() ?? "";
+}
+
+function getDocumentContentType(contentType: string, fileName: string) {
+  const normalizedType = contentType.trim().toLowerCase();
+  if (DOCUMENT_CONTENT_TYPES.has(normalizedType)) return normalizedType;
+
+  const extension = getExtension(fileName);
+  if (extension === "pdf") return "application/pdf";
+  if (extension === "doc") return "application/msword";
+  if (extension === "docx") {
+    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  }
+
+  return "";
+}
+
+function sanitizeStorageFileName(fileName: string) {
+  const extension = getExtension(fileName);
+  const nameWithoutExtension = fileName.replace(/\.[^.]+$/, "");
+  const safeName =
+    nameWithoutExtension
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 60) || "document";
+
+  return `${safeName}.${extension}`;
+}
+
+function randomStorageId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function parseUploadInput(input: unknown) {
+  if (input === null || typeof input !== "object") {
+    throw new Error("Invalid upload request.");
+  }
+
+  const values = input as {
+    kind?: unknown;
+    fileName?: unknown;
+    contentType?: unknown;
+    size?: unknown;
+  };
+  const kind = values.kind === "cv" || values.kind === "resume" ? values.kind : "";
+  const fileName = typeof values.fileName === "string" ? values.fileName.trim() : "";
+  const contentType = typeof values.contentType === "string" ? values.contentType : "";
+  const size = typeof values.size === "number" ? values.size : Number(values.size);
+  const extension = getExtension(fileName);
+  const normalizedContentType = getDocumentContentType(contentType, fileName);
+
+  if (!kind) throw new Error("Upload type must be CV or resume.");
+  if (!fileName || !DOCUMENT_EXTENSIONS.has(extension)) {
+    throw new Error("Only PDF, DOC, and DOCX files are supported.");
+  }
+  if (!normalizedContentType) {
+    throw new Error("Only PDF, DOC, and DOCX files are supported.");
+  }
+  if (!Number.isFinite(size) || size <= 0 || size > MAX_DOCUMENT_BYTES) {
+    throw new Error("Document must be 10 MB or smaller.");
+  }
+
+  return { kind, fileName, contentType: normalizedContentType, size };
 }
 
 async function getSupabaseWriteClient(context: {
@@ -154,10 +233,6 @@ async function redisDel(): Promise<boolean> {
 }
 
 export const getSiteContent = createServerFn({ method: "GET" }).handler(async () => {
-  // Redis-first
-  const cached = await redisGet();
-  if (cached) return { content: normalizeSiteContent(cached), source: "redis" as const };
-
   const supabase = getSupabaseReadClient();
   const { data, error } = await supabase
     .from("site_content")
@@ -166,6 +241,9 @@ export const getSiteContent = createServerFn({ method: "GET" }).handler(async ()
     .single();
 
   if (error) {
+    const cached = await redisGet();
+    if (cached) return { content: normalizeSiteContent(cached), source: "redis" as const };
+
     console.error("[site_content] Failed to load content:", error.message);
     return { content: DEFAULT_SITE_CONTENT, source: "default" as const };
   }
@@ -174,6 +252,55 @@ export const getSiteContent = createServerFn({ method: "GET" }).handler(async ()
   await redisSet(content);
   return { content, source: "supabase" as const };
 });
+
+export const getAdminSiteContent = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    assertAdminAccess(context.claims);
+
+    const supabase = await getSupabaseWriteClient(context);
+    const { data, error } = await supabase
+      .from("site_content")
+      .select("data")
+      .eq("id", "main")
+      .single();
+
+    if (error) {
+      console.error("[site_content] Failed to load admin content:", error.message);
+      return { content: DEFAULT_SITE_CONTENT, source: "default" as const };
+    }
+
+    return { content: normalizeSiteContent(data.data), source: "supabase" as const };
+  });
+
+export const createAssetUploadUrl = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .validator(parseUploadInput)
+  .handler(async ({ data, context }) => {
+    assertAdminAccess(context.claims);
+
+    if (!cleanEnv(process.env.SUPABASE_SERVICE_ROLE_KEY)) {
+      throw new Error("Uploads require SUPABASE_SERVICE_ROLE_KEY to be configured.");
+    }
+
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const safeFileName = sanitizeStorageFileName(data.fileName);
+    const path = `documents/${data.kind}/${Date.now()}-${randomStorageId()}-${safeFileName}`;
+    const { data: signed, error } = await supabaseAdmin.storage
+      .from(SITE_ASSETS_BUCKET)
+      .createSignedUploadUrl(path);
+
+    if (error || !signed) throw error ?? new Error("Failed to create upload URL.");
+
+    const { data: publicData } = supabaseAdmin.storage.from(SITE_ASSETS_BUCKET).getPublicUrl(path);
+    return {
+      bucket: SITE_ASSETS_BUCKET,
+      path,
+      token: signed.token,
+      publicUrl: publicData.publicUrl,
+      contentType: data.contentType,
+    };
+  });
 
 export const updateSiteContent = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
